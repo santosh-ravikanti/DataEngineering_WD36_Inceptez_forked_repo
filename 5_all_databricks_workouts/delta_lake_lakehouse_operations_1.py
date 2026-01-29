@@ -319,7 +319,15 @@ print(spark.read.table("drugstbl_merge").count())
 
 # MAGIC %md
 # MAGIC #####c. Vaccum
-# MAGIC *VACUUM* in Delta Lake removes old, unused files to free up storage, default retention hours is 168. These files come from operations like DELETE, UPDATE, or MERGE and are kept temporarily so time-travel queries can work.
+# MAGIC *VACUUM* in Delta Lake removes old, unused files to free up storage, default retention hours is 168. These files come from operations like DELETE, UPDATE, or MERGE and are kept temporarily so time-travel queries can work.<br>
+# MAGIC
+# MAGIC Before VACUUM<br>
+# MAGIC Active + deleted parquet files exist<br>
+# MAGIC
+# MAGIC After VACUUM<br>
+# MAGIC Only ACTIVE parquet files remains and delete Old parquet files (from UPDATE/MERGE/DELETE)<br>
+# MAGIC Logs remain intact<br>
+# MAGIC Time travel beyond retention becomes impossible<br>
 
 # COMMAND ----------
 
@@ -387,6 +395,11 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 # COMMAND ----------
 
 # MAGIC %sql
+# MAGIC use lakehousecat.deltadb
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC CREATE OR REPLACE TABLE acid_demo_txn (
 # MAGIC   id INT,
 # MAGIC   amount INT
@@ -406,6 +419,7 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 # MAGIC (1, 100),
 # MAGIC (2, 200),
 # MAGIC (3, 300);
+# MAGIC --START TRANSACTION; DELETE FROM employees WHERE employee_id = 130; ROLLBACK;
 
 # COMMAND ----------
 
@@ -424,6 +438,8 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 # MAGIC UPDATE acid_demo_txn SET amount = amount + 100 WHERE id = 1;--individual/atomic
 # MAGIC UPDATE acid_demo_txn SET amount = amount + 200 WHERE id = 1;--individual/atomic
 # MAGIC describe history acid_demo_txn;
+# MAGIC --START TRANSACTION; UPDATE acid_demo_txn SET amount = amount + 100 WHERE id = 1; commit;
+# MAGIC --START TRANSACTION; UPDATE acid_demo_txn SET amount = amount + 200 WHERE id = 1; commit;
 
 # COMMAND ----------
 
@@ -449,11 +465,26 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC --Isolation
+# MAGIC --Isolation (We can achieve using timetravel (restore operation (no rollback)))
+# MAGIC --START TRANSACTION; SAVEPOINT before_delete; DELETE FROM employees WHERE employee_id = 129; ROLLBACK TO before_delete;
 # MAGIC --Notebook1 (We can see the data in notebook1)
-# MAGIC BEGIN TRANSACTION;
-# MAGIC UPDATE acid_demo_txn SET amount = 999 WHERE id = 2;
+# MAGIC --BEGIN TRANSACTION;
+# MAGIC UPDATE acid_demo_txn SET amount = 999 WHERE id = 2;--Serialized (Committed read)
 # MAGIC --Notebook2 (We can see the data in notebook2 )
+# MAGIC use lakehousecat.deltadb;
+# MAGIC select * from (select * from acid_demo_txn version as of 14) where id=2;--serializable read (after the data successfully committed)
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC --something like savepoint+rollback (but not really a rollback (TCL is not available in Databricks in the name of commit, rollback, savepoint))
+# MAGIC restore table acid_demo_txn to version as of 12
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC describe history acid_demo_txn;
+# MAGIC --select * from acid_demo_txn;
 
 # COMMAND ----------
 
@@ -464,8 +495,15 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 
 # COMMAND ----------
 
+# MAGIC %sql
+# MAGIC use lakehousecat.deltadb;
+# MAGIC select * from acid_demo_txn;
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC #####e. Transactions Control using restore
+# MAGIC Bigdata ecosystems such as spark/databricks/delta are not Transaction in nature, hence it will not support TCL
 
 # COMMAND ----------
 
@@ -474,6 +512,11 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 # MAGIC --select count(1) from deltadb.drugs where date>'2012-02-28';
 # MAGIC --4329
 # MAGIC delete from drugstbl where date>'2012-02-28';
+
+# COMMAND ----------
+
+# MAGIC %sql 
+# MAGIC select count(1) from drugstbl;
 
 # COMMAND ----------
 
@@ -488,7 +531,7 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC RESTORE TABLE drugstbl TO VERSION AS OF 0;
+# MAGIC RESTORE TABLE drugstbl TO VERSION AS OF 2;
 
 # COMMAND ----------
 
@@ -498,7 +541,8 @@ spark.sql("VACUUM drugstbl_merge RETAIN 168 HOURS")
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC RESTORE TABLE drugstbl TO VERSION AS OF 0;
+# MAGIC --We can restore to any older/later version (unlit 168 hours/vacumm period)
+# MAGIC RESTORE TABLE drugstbl TO VERSION AS OF 4;
 
 # COMMAND ----------
 
